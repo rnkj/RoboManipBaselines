@@ -10,6 +10,12 @@ class DataKey:
     # Reward
     REWARD = "reward"
 
+    # Subactions
+    WORKER_ACTIONS = "worker_actions"
+    WORKER_ACTION_CLASSES = "worker_action_classes"
+    ROBOT_ACTIONS = "robot_actions"
+    ROBOT_ACTION_CLASSES = "robot_action_classes"
+
     # Measured joint position (including both arm and gripper)
     MEASURED_JOINT_POS = "measured_joint_pos"
     # Command joint position (including both arm and gripper)

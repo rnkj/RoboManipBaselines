@@ -8,6 +8,7 @@ class TrainMain:
     policy_choices = [
         "Mlp",
         "Sarnn",
+        "KaSarnn",
         "Act",
         "MtAct",
         "DiffusionPolicy",
