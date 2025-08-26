@@ -52,6 +52,10 @@ class TrainKaSarnn(TrainBase):
         parser.set_defaults(num_epochs=8000)
         parser.set_defaults(lr=1e-4)
 
+        parser.add_argument(
+            "--weight_decay", type=float, default=1e-4, help="weight decay"
+        )
+
         # parser.add_argument(
         #     "--expert_knowledge_names",
         #     type=str,
@@ -199,8 +203,10 @@ class TrainKaSarnn(TrainBase):
         self.policy.cuda()
 
         # Construct optimizer
-        self.optimizer = torch.optim.Adam(
-            self.policy.parameters(), lr=self.args.lr, eps=1e-7
+        self.optimizer = torch.optim.AdamW(
+            self.policy.parameters(),
+            lr=self.args.lr,
+            weight_decay=self.args.weight_decay,
         )
 
         # Print policy information
