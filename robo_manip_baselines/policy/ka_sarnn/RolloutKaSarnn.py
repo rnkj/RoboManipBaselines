@@ -55,6 +55,7 @@ class RolloutKaSarnn(RolloutBase):
         super().reset_variables()
 
         self.lstm_state = None
+        self.adapter_state = None
 
         self.policy_action_list = np.empty((0, self.state_dim))
         self.state_list = np.empty((0, self.state_dim))
@@ -62,6 +63,7 @@ class RolloutKaSarnn(RolloutBase):
         self.predicted_image_list = None
         self.attention_list = None
         self.predicted_attention_list = None
+        self.logits_list = None
 
     def infer_policy(self):
         state = self.get_state()
@@ -71,8 +73,10 @@ class RolloutKaSarnn(RolloutBase):
             predicted_image_list,
             attention_list,
             predicted_attention_list,
+            predicted_logits_list,
             self.lstm_state,
-        ) = self.policy(state, image_list, self.lstm_state)
+            self.adapter_state,
+        ) = self.policy(state, image_list, self.lstm_state, self.adapter_state)
         predicted_state = predicted_state[0].detach().numpy().astype(np.float64)
         self.policy_action = denormalize_data(
             predicted_state, self.model_meta_info["state"]
@@ -98,6 +102,10 @@ class RolloutKaSarnn(RolloutBase):
         self.predicted_attention_list = [
             predicted_attention[0].detach().numpy()
             for predicted_attention in predicted_attention_list
+        ]
+        self.logits_list = [
+            predicted_logits[0].detach().numpy()
+            for predicted_logits in predicted_logits_list
         ]
 
     def get_images(self):

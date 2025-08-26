@@ -13,6 +13,7 @@ class RolloutMain:
     policy_choices = [
         "Mlp",
         "Sarnn",
+        "KaSarnn",
         "Act",
         "MtAct",
         "DiffusionPolicy",
