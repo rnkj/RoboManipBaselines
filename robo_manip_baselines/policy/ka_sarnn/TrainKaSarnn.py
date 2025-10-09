@@ -171,7 +171,10 @@ class TrainKaSarnn(TrainBase):
         self.model_meta_info["data"]["image_crop_size_list"] = (
             self.args.image_crop_size_list
         )
-        self.model_meta_info["data"]["image_size_list"] = self.args.image_size_list
+        self.model_meta_info["data"]["image_size_list"] = [
+            image_size[::-1]
+            for image_size in self.args.image_size_list
+        ]
 
         rmb_file = self.all_filenames[0]
         with RmbData(rmb_file, mode="r") as rmb_data:
