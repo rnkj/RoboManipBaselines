@@ -60,8 +60,6 @@ per env step. The training `--skip` value is not inherited during rollout.
 
 - **Single camera**: `JEPA.encode` expects `batch["pixels"]` as `(B, T, C, H, W)`;
   multi-camera fusion is outside the scope of this implementation.
-- **Single GPU**: `SIGReg` does not support DDP (no cross-device reduction
-  inside the module).
 - **Proprioception is unused**: normalized state from `model_meta_info["state"]`
   is placed in `batch["observation"]`, but the upstream `lejepa_forward` only
   reads `pixels` and `action`. The Rollout side likewise ignores proprio, and
