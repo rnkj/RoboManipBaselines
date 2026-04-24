@@ -125,6 +125,11 @@ benchmarks = [
   "python-pptx",
   "imageio-ffmpeg",
 ]
+le-wm = [
+  "stable-pretraining",
+  "datasets>=2",
+  "einops",
+]
 
 [tool.setuptools.packages.find]
 include = ["robo_manip_baselines", "robo_manip_baselines.*"]

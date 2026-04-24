@@ -1,0 +1,232 @@
+import os
+import sys
+
+import torch
+from stable_pretraining.backbone.utils import vit_hf
+from tqdm import tqdm
+
+from robo_manip_baselines.common import TrainBase
+
+from .LeWmDataset import LeWmDataset
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../third_party/le-wm"))
+from jepa import JEPA  # noqa: E402
+from module import MLP, ARPredictor, Embedder, SIGReg  # noqa: E402
+
+_VIT_SIZE_CHOICES = ("tiny", "small", "base", "large")
+
+
+class TrainLeWm(TrainBase):
+    DatasetClass = LeWmDataset
+
+    def set_additional_args(self, parser):
+        parser.set_defaults(enable_rmb_cache=False)
+        parser.set_defaults(batch_size=32)
+        parser.set_defaults(num_epochs=100)
+        parser.set_defaults(lr=5e-5)
+
+        parser.add_argument(
+            "--camera_name",
+            type=str,
+            default="front",
+            help=(
+                "single camera name to feed into the ViT encoder "
+                "(overrides --camera_names)"
+            ),
+        )
+        parser.add_argument(
+            "--frameskip",
+            type=int,
+            default=1,
+            help="number of raw action frames bundled into one LeWm step token",
+        )
+        parser.add_argument(
+            "--history_size",
+            type=int,
+            default=3,
+            help="number of context frames fed to the ARPredictor",
+        )
+        parser.add_argument(
+            "--num_preds",
+            type=int,
+            default=1,
+            help="number of prediction offset frames",
+        )
+        parser.add_argument("--img_size", type=int, default=224)
+        parser.add_argument("--patch_size", type=int, default=14)
+        parser.add_argument(
+            "--encoder_scale",
+            type=str,
+            default="tiny",
+            choices=list(_VIT_SIZE_CHOICES),
+        )
+        parser.add_argument("--embed_dim", type=int, default=192)
+        parser.add_argument("--pred_depth", type=int, default=6)
+        parser.add_argument("--pred_heads", type=int, default=16)
+        parser.add_argument("--pred_mlp_dim", type=int, default=2048)
+        parser.add_argument("--pred_dim_head", type=int, default=64)
+        parser.add_argument("--pred_dropout", type=float, default=0.1)
+        parser.add_argument("--pred_emb_dropout", type=float, default=0.0)
+        parser.add_argument("--sigreg_weight", type=float, default=0.09)
+        parser.add_argument("--sigreg_knots", type=int, default=17)
+        parser.add_argument("--sigreg_num_proj", type=int, default=1024)
+        parser.add_argument("--weight_decay", type=float, default=1e-3)
+        parser.add_argument("--grad_clip", type=float, default=1.0)
+
+    def setup_model_meta_info(self):
+        self.args.camera_names = [self.args.camera_name]
+        super().setup_model_meta_info()
+
+        num_steps = self.args.history_size + self.args.num_preds
+        self.model_meta_info["data"].update(
+            {
+                "frameskip": self.args.frameskip,
+                "history_size": self.args.history_size,
+                "num_preds": self.args.num_preds,
+                "num_steps": num_steps,
+                "img_size": self.args.img_size,
+            }
+        )
+
+    def setup_policy(self):
+        predictor_kwargs = {
+            "depth": self.args.pred_depth,
+            "heads": self.args.pred_heads,
+            "mlp_dim": self.args.pred_mlp_dim,
+            "dim_head": self.args.pred_dim_head,
+            "dropout": self.args.pred_dropout,
+            "emb_dropout": self.args.pred_emb_dropout,
+        }
+        sigreg_kwargs = {
+            "knots": self.args.sigreg_knots,
+            "num_proj": self.args.sigreg_num_proj,
+        }
+
+        # Save reconstruction args to meta info before instantiation
+        self.model_meta_info["policy"]["args"] = {
+            "encoder_scale": self.args.encoder_scale,
+            "patch_size": self.args.patch_size,
+            "img_size": self.args.img_size,
+            "embed_dim": self.args.embed_dim,
+            "history_size": self.args.history_size,
+            "num_preds": self.args.num_preds,
+            "frameskip": self.args.frameskip,
+            "predictor": predictor_kwargs,
+            "sigreg": {"weight": self.args.sigreg_weight, "kwargs": sigreg_kwargs},
+        }
+
+        encoder = vit_hf(
+            self.args.encoder_scale,
+            patch_size=self.args.patch_size,
+            image_size=self.args.img_size,
+            pretrained=False,
+            use_mask_token=False,
+        )
+        hidden_dim = encoder.config.hidden_size
+        embed_dim = self.args.embed_dim
+        action_dim = len(self.model_meta_info["action"]["example"])
+        effective_act_dim = self.args.frameskip * action_dim
+
+        predictor = ARPredictor(
+            num_frames=self.args.history_size,
+            input_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            output_dim=hidden_dim,
+            **predictor_kwargs,
+        )
+        action_encoder = Embedder(input_dim=effective_act_dim, emb_dim=embed_dim)
+        projector = MLP(
+            input_dim=hidden_dim,
+            hidden_dim=2048,
+            output_dim=embed_dim,
+            norm_fn=torch.nn.BatchNorm1d,
+        )
+        pred_proj = MLP(
+            input_dim=hidden_dim,
+            hidden_dim=2048,
+            output_dim=embed_dim,
+            norm_fn=torch.nn.BatchNorm1d,
+        )
+
+        self.policy = JEPA(
+            encoder=encoder,
+            predictor=predictor,
+            action_encoder=action_encoder,
+            projector=projector,
+            pred_proj=pred_proj,
+        ).cuda()
+        self.sigreg = SIGReg(**sigreg_kwargs).cuda()
+        self.sigreg_weight = self.args.sigreg_weight
+
+        self.optimizer = torch.optim.AdamW(
+            self.policy.parameters(),
+            lr=self.args.lr,
+            weight_decay=self.args.weight_decay,
+        )
+
+        self.print_policy_info()
+        print(
+            f"  - encoder: ViT-{self.args.encoder_scale} "
+            f"(hidden_dim={hidden_dim}, patch={self.args.patch_size}, "
+            f"img={self.args.img_size})"
+        )
+        print(
+            f"  - wm: history_size={self.args.history_size}, "
+            f"num_preds={self.args.num_preds}, "
+            f"frameskip={self.args.frameskip}, "
+            f"effective_act_dim={effective_act_dim}, embed_dim={embed_dim}"
+        )
+
+    def _forward_batch(self, batch):
+        batch = {k: v.cuda(non_blocking=True) for k, v in batch.items()}
+        batch["action"] = torch.nan_to_num(batch["action"], 0.0)
+        output = self.policy.encode(batch)
+        emb = output["emb"]
+        act_emb = output["act_emb"]
+
+        ctx_len = self.args.history_size
+        n_preds = self.args.num_preds
+        ctx_emb = emb[:, :ctx_len]
+        ctx_act = act_emb[:, :ctx_len]
+        tgt_emb = emb[:, n_preds:]
+        pred_emb = self.policy.predict(ctx_emb, ctx_act)
+
+        pred_loss = (pred_emb - tgt_emb).pow(2).mean()
+        sigreg_loss = self.sigreg(emb.transpose(0, 1))
+        loss = pred_loss + self.sigreg_weight * sigreg_loss
+        return {
+            "loss": loss,
+            "pred_loss": pred_loss,
+            "sigreg_loss": sigreg_loss,
+        }
+
+    def train_loop(self):
+        for epoch in tqdm(range(self.args.num_epochs)):
+            self.policy.train()
+            batch_result_list = []
+            for batch in self.train_dataloader:
+                self.optimizer.zero_grad()
+                result = self._forward_batch(batch)
+                result["loss"].backward()
+                if self.args.grad_clip is not None and self.args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(), self.args.grad_clip
+                    )
+                self.optimizer.step()
+                batch_result_list.append(self.detach_batch_result(result))
+            self.log_epoch_summary(batch_result_list, "train", epoch)
+
+            with torch.inference_mode():
+                self.policy.eval()
+                batch_result_list = []
+                for batch in self.val_dataloader:
+                    result = self._forward_batch(batch)
+                    batch_result_list.append(self.detach_batch_result(result))
+                epoch_summary = self.log_epoch_summary(batch_result_list, "val", epoch)
+                self.update_best_ckpt(epoch_summary)
+
+            if epoch % max(self.args.num_epochs // 10, 1) == 0:
+                self.save_current_ckpt(f"epoch{epoch:0>3}")
+
+        self.save_current_ckpt("last")
+        self.save_best_ckpt()
