@@ -30,8 +30,13 @@ python ./bin/Train.py LeWm \
     --lr 3e-4 \
     --weight_decay 1e-3 \
     --grad_clip 1.0 \
-    --sigreg_weight 0.09
+    --sigreg_weight 0.09 \
+    --use_cached_dataset
 ```
+
+Note: Due to the computational time,
+- turning on `--use_cached_dataset` is highly recommended, and
+- RmbData-SingleHDF5 (`.hdf5`) format is better.
 
 ## Policy rollout
 
