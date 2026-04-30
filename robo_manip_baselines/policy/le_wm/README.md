@@ -58,14 +58,13 @@ python ./bin/Rollout.py LeWm MujocoUR5eToolbox \
     --action_clip
 ```
 
-Note: at training time, `--skip` controls the stride at which states/images
-are decimated from the raw dataset (RmbData decimation stride), while
-`frameskip` is the number of raw action frames bundled into one LeWm step
-token (stored separately in `model_meta_info["data"]["frameskip"]`). At
-rollout time, `--skip` (in the RolloutBase sense of an env-step interval) is
-always forced to 1 because LeWm feeds one raw action per env step; the
-training-time bundle width is restored from
-`model_meta_info["data"]["frameskip"]`.
+Note: at training time, `--skip` plays a dual role — it is both the RmbData
+decimation stride for states/images and le-wm's `frameskip` (the number of
+raw action frames bundled into one LeWm step token). The single value is
+stored in `model_meta_info["data"]["skip"]`. At rollout time, `--skip` (in
+the RolloutBase sense of an env-step interval) is always forced to 1
+because LeWm feeds one raw action per env step; the training-time bundle
+width is restored from `model_meta_info["data"]["skip"]`.
 
 ## Limitations
 

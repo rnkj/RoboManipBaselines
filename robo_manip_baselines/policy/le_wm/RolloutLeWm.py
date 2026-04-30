@@ -94,11 +94,11 @@ class RolloutLeWm(RolloutBase):
         policy_args = meta["policy"]["args"]
 
         # `self.skip` is the training-time action bundle width (raw frames per
-        # LeWm step token, stored as "frameskip" in meta_info to distinguish it
-        # from the RmbData decimation stride "skip").
+        # LeWm step token), which is unified with the RmbData decimation stride
+        # under `data_meta["skip"]` (see LeWmDataset).
         # `self.args.skip` is the rollout step interval forced to 1 in
         # set_additional_args.
-        self.skip = data_meta["frameskip"]
+        self.skip = data_meta["skip"]
         self.history_size = data_meta["history_size"]
         self.num_preds = data_meta["num_preds"]
         self.img_size = data_meta["img_size"]
