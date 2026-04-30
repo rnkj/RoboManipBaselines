@@ -31,15 +31,17 @@ class RolloutLeWm(RolloutBase):
     Method planning over action sequences, scoring each candidate by the
     goal-embedding MSE returned from JEPA.get_cost. A first-in-first-out
     action buffer decouples planning cadence (once every receding_horizon *
-    frameskip env steps) from the per-step env.step() consumption.
+    skip env steps) from the per-step env.step() consumption.
 
     The CEM loop is written to mirror stable_worldmodel.solver.CEMSolver so
     that a parity test is possible (see tests/TestLeWmCem.py).
     """
 
     def set_additional_args(self, parser):
-        # LeWm plans raw actions and pops one per env step, so infer_policy
-        # must run every step.
+        # `args.skip` is the rollout step interval (RolloutBase semantics);
+        # forced to 1 because LeWm plans raw actions and pops one per env step.
+        # The training-time bundle width (raw frames per LeWm step token) is
+        # read separately from `model_meta_info["data"]["skip"]` in setup_policy.
         parser.set_defaults(skip=1)
 
         # Planning hyper-parameters.
@@ -91,11 +93,16 @@ class RolloutLeWm(RolloutBase):
         data_meta = meta["data"]
         policy_args = meta["policy"]["args"]
 
-        self.frameskip = data_meta["frameskip"]
+        # `self.skip` is the training-time action bundle width (raw frames per
+        # LeWm step token, stored as "frameskip" in meta_info to distinguish it
+        # from the RmbData decimation stride "skip").
+        # `self.args.skip` is the rollout step interval forced to 1 in
+        # set_additional_args.
+        self.skip = data_meta["frameskip"]
         self.history_size = data_meta["history_size"]
         self.num_preds = data_meta["num_preds"]
         self.img_size = data_meta["img_size"]
-        self.effective_act_dim = self.frameskip * self.action_dim
+        self.effective_act_dim = self.skip * self.action_dim
 
         if self.args.horizon < self.history_size:
             raise ValueError(
@@ -167,7 +174,7 @@ class RolloutLeWm(RolloutBase):
         )
         print(
             f"  - wm: history_size={self.history_size}, num_preds={self.num_preds}, "
-            f"frameskip={self.frameskip}, effective_act_dim={self.effective_act_dim}, "
+            f"skip={self.skip}, effective_act_dim={self.effective_act_dim}, "
             f"embed_dim={embed_dim}"
         )
         print(
@@ -191,6 +198,12 @@ class RolloutLeWm(RolloutBase):
         self.action_plan_buf = []
         self.cem_mean = None
         self.cem_std = None
+        # list of [best_cost, mean_cost] per planning call for diagnostics
+        self.cem_cost_log = []
+        self._cost_log_path = os.path.join(
+            os.path.dirname(self.args.checkpoint),
+            f"cem_cost_log_ep{self.data_manager.episode_idx:0>3}.npy",
+        )
 
     def setup_plot(self, fig_ax=None):
         if fig_ax is None:
@@ -256,6 +269,7 @@ class RolloutLeWm(RolloutBase):
 
         if len(self.action_plan_buf) == 0:
             self.action_plan_buf.extend(self._plan_cem())
+            np.save(self._cost_log_path, np.array(self.cem_cost_log))
 
         self.policy_action = self.action_plan_buf.pop(0)
         self.policy_action_list = np.concatenate(
@@ -313,11 +327,20 @@ class RolloutLeWm(RolloutBase):
             self.cem_mean = mean.detach().clone()
             self.cem_std = std.detach().clone()
 
+        best_cost = float(cost.min().item())
+        mean_cost = float(cost.mean().item())
+        self.cem_cost_log.append([best_cost, mean_cost])
+        print(
+            f"[CEM plan #{len(self.cem_cost_log):>3d}]"
+            f"  best={best_cost:.6f}  mean={mean_cost:.6f}",
+            flush=True,
+        )
+
         best = mean.detach().cpu().numpy()  # (T, A)
         raw_list = []
         for k in range(self.args.receding_horizon):
-            bundled = best[k].reshape(self.frameskip, self.action_dim)
-            for f in range(self.frameskip):
+            bundled = best[k].reshape(self.skip, self.action_dim)
+            for f in range(self.skip):
                 raw = denormalize_data(bundled[f], self.model_meta_info["action"])
                 if self.args.action_clip:
                     raw = np.clip(

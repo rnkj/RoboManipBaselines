@@ -13,7 +13,7 @@ cd robo_manip_baselines
 python ./bin/Train.py LeWm \
     --dataset_dir ./dataset/MujocoUR5eToolbox_Dataset100 \
     --camera_name front \
-    --frameskip 1 \
+    --skip 1 \
     --history_size 3 \
     --num_preds 1 \
     --encoder_scale tiny \
@@ -58,8 +58,14 @@ python ./bin/Rollout.py LeWm MujocoUR5eToolbox \
     --action_clip
 ```
 
-Note: `--skip` is always forced to 1, because LeWm feeds one raw action
-per env step. The training `--skip` value is not inherited during rollout.
+Note: at training time, `--skip` controls the stride at which states/images
+are decimated from the raw dataset (RmbData decimation stride), while
+`frameskip` is the number of raw action frames bundled into one LeWm step
+token (stored separately in `model_meta_info["data"]["frameskip"]`). At
+rollout time, `--skip` (in the RolloutBase sense of an env-step interval) is
+always forced to 1 because LeWm feeds one raw action per env step; the
+training-time bundle width is restored from
+`model_meta_info["data"]["frameskip"]`.
 
 ## Limitations
 

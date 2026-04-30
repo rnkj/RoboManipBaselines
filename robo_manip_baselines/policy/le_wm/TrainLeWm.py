@@ -1,11 +1,16 @@
 import os
 import sys
+import warnings
 
+import numpy as np
 import torch
+import torch.utils.data
 from stable_pretraining.backbone.utils import vit_hf
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from robo_manip_baselines.common import TrainBase
+from robo_manip_baselines.common import CachedDataset, TrainBase
 
 from .LeWmDataset import LeWmDataset
 
@@ -33,12 +38,6 @@ class TrainLeWm(TrainBase):
                 "single camera name to feed into the ViT encoder "
                 "(overrides --camera_names)"
             ),
-        )
-        parser.add_argument(
-            "--frameskip",
-            type=int,
-            default=1,
-            help="number of raw action frames bundled into one LeWm step token",
         )
         parser.add_argument(
             "--history_size",
@@ -80,12 +79,72 @@ class TrainLeWm(TrainBase):
         num_steps = self.args.history_size + self.args.num_preds
         self.model_meta_info["data"].update(
             {
-                "frameskip": self.args.frameskip,
                 "history_size": self.args.history_size,
                 "num_preds": self.args.num_preds,
                 "num_steps": num_steps,
                 "img_size": self.args.img_size,
             }
+        )
+
+    def setup_dataset(self):
+        if self.args.enable_rmb_cache and self.args.use_cached_dataset:
+            raise ValueError(
+                f"[{self.__class__.__name__}] Both 'enable_rmb_cache' and "
+                "'use_cached_dataset' options cannot be True at the same time."
+            )
+
+        if self.args.val_ratio is not None:
+            warnings.warn(
+                f"[{self.__class__.__name__}] --val_ratio is ignored; "
+                "LeWm uses (1 - train_ratio) for window-level random_split.",
+                stacklevel=2,
+            )
+
+        self.set_data_stats()
+
+        full_dataset = self.DatasetClass(
+            self.all_filenames, self.model_meta_info, self.args.enable_rmb_cache
+        )
+        if self.args.use_cached_dataset:
+            full_dataset = CachedDataset(full_dataset)
+        self.full_dataset = full_dataset
+
+        n = len(full_dataset)
+        ratio = float(np.clip(self.args.train_ratio, 0.0, 1.0))
+        n_train = max(int(ratio * n), 1)
+        n_val = max(n - n_train, 1)
+        n_train = n - n_val
+
+        generator = torch.Generator().manual_seed(int(self.args.seed))
+        train_set, val_set = torch.utils.data.random_split(
+            full_dataset, lengths=[n_train, n_val], generator=generator
+        )
+
+        loader_kwargs = {
+            "batch_size": self.args.batch_size,
+            "pin_memory": True,
+            "num_workers": self.args.num_workers,
+            "persistent_workers": True,
+            "prefetch_factor": 4,
+        }
+        self.train_dataloader = DataLoader(train_set, shuffle=True, **loader_kwargs)
+        self.val_dataloader = DataLoader(val_set, shuffle=False, **loader_kwargs)
+
+        self.writer = SummaryWriter(self.args.checkpoint_dir)
+        self.print_dataset_info()
+
+    def print_dataset_info(self):
+        train_set = self.train_dataloader.dataset
+        val_set = self.val_dataloader.dataset
+        head = 8
+        print(
+            f"[{self.__class__.__name__}] Load dataset from {self.args.dataset_dir}\n"
+            f"  - source files: {len(self.all_filenames)}\n"
+            f"  - train windows: {len(train_set)}, val windows: {len(val_set)} "
+            f"(total windows: {len(self.full_dataset)})\n"
+            f"  - train_ratio: {self.args.train_ratio}, seed: {self.args.seed}\n"
+            f"  - train indices[:{head}]: {list(train_set.indices[:head])}\n"
+            f"  - val indices[:{head}]:   {list(val_set.indices[:head])}"
         )
 
     def setup_policy(self):
@@ -110,7 +169,6 @@ class TrainLeWm(TrainBase):
             "embed_dim": self.args.embed_dim,
             "history_size": self.args.history_size,
             "num_preds": self.args.num_preds,
-            "frameskip": self.args.frameskip,
             "predictor": predictor_kwargs,
             "sigreg": {"weight": self.args.sigreg_weight, "kwargs": sigreg_kwargs},
         }
@@ -125,7 +183,7 @@ class TrainLeWm(TrainBase):
         hidden_dim = encoder.config.hidden_size
         embed_dim = self.args.embed_dim
         action_dim = len(self.model_meta_info["action"]["example"])
-        effective_act_dim = self.args.frameskip * action_dim
+        effective_act_dim = self.args.skip * action_dim
 
         predictor = ARPredictor(
             num_frames=self.args.history_size,
@@ -173,7 +231,7 @@ class TrainLeWm(TrainBase):
         print(
             f"  - wm: history_size={self.args.history_size}, "
             f"num_preds={self.args.num_preds}, "
-            f"frameskip={self.args.frameskip}, "
+            f"skip={self.args.skip}, "
             f"effective_act_dim={effective_act_dim}, embed_dim={embed_dim}"
         )
 
