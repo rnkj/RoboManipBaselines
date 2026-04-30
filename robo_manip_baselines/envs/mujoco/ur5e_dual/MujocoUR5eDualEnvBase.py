@@ -9,6 +9,7 @@ from robo_manip_baselines.teleop import (
     GelloInputDevice,
     KeyboardInputDevice,
     SpacemouseInputDevice,
+    ViveInputDevice,
 )
 
 from ..MujocoEnvBase import MujocoEnvBase
@@ -71,6 +72,8 @@ class MujocoUR5eDualEnvBase(MujocoEnvBase):
             InputDeviceClass = GelloInputDevice
         elif input_device_name == "keyboard":
             InputDeviceClass = KeyboardInputDevice
+        elif input_device_name == "vive":
+            InputDeviceClass = ViveInputDevice
         else:
             raise ValueError(
                 f"[{self.__class__.__name__}] Invalid input device key: {input_device_name}"
@@ -90,7 +93,13 @@ class MujocoUR5eDualEnvBase(MujocoEnvBase):
         ]
 
     def get_input_device_kwargs(self, input_device_name):
-        return {}
+        if input_device_name == "vive":
+            return {
+                0: {"vive_to_eef_frame_rotation": np.diag([-1.0, -1.0, 1.0])},
+                1: {"vive_to_eef_frame_rotation": np.diag([-1.0, -1.0, 1.0])},
+            }
+        else:
+            return {}
 
     def _get_obs(self):
         left_obs = self._get_obs_single_arm("left")

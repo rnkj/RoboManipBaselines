@@ -1,5 +1,6 @@
 robot_ip_left: "192.168.11.4" # left arm from workspace side
 robot_ip_right: "192.168.11.5" # right arm from workspace side
+
 camera_ids:
   front: "145522067924"
   hand: "153122070885"

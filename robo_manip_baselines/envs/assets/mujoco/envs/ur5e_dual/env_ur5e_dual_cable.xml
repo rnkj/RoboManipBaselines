@@ -18,6 +18,7 @@
     <camera name="front" mode="fixed" pos="0.5 0.0 1.5" euler="0.0 0.785398 1.5708"/>
     <camera name="left" mode="fixed" pos="-0.0 -0.75 1.35" euler="0.785398 0.0 0.0"/>
     <camera name="right" mode="fixed" pos="-0.0 0.75 1.35" euler="-0.785398 0.0 3.1415"/>
+    <camera name="rear" mode="fixed" pos="-0.9 0.0 1.35" euler="0.0 -1.185398 -1.5708"/>
 
     <geom name="floor" size="0 0 0.05" type="plane" material="floor"/>
 

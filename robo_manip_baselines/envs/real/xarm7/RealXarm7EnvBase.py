@@ -17,7 +17,7 @@ from ..RealEnvBase import RealEnvBase
 
 class RealXarm7EnvBase(RealEnvBase):
     action_space = Box(
-        low=np.deg2rad(
+        low=np.array(
             [
                 -2 * np.pi,
                 np.deg2rad(-118),

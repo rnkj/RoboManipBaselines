@@ -1,0 +1,9 @@
+0:
+  device_params:
+    name: left
+    serial_number: LHR-301CBF17
+
+1:
+  device_params:
+    name: right
+    serial_number: LHR-55377A2B
