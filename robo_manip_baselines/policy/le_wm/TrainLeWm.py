@@ -71,6 +71,22 @@ class TrainLeWm(TrainBase):
         parser.add_argument("--sigreg_num_proj", type=int, default=1024)
         parser.add_argument("--weight_decay", type=float, default=1e-3)
         parser.add_argument("--grad_clip", type=float, default=1.0)
+        parser.add_argument(
+            "--pretrained",
+            action="store_true",
+            default=False,
+            help=(
+                "Load pretrained ViT weights from HuggingFace "
+                "(google/vit-{scale}-patch{patch_size}-{img_size}). "
+                "Requires patch_size=16 for standard Google ViT checkpoints."
+            ),
+        )
+        parser.add_argument(
+            "--freeze_encoder",
+            action="store_true",
+            default=False,
+            help="Freeze encoder parameters; only predictor/projector/action_encoder are trained.",
+        )
 
     def setup_model_meta_info(self):
         self.args.camera_names = [self.args.camera_name]
@@ -177,7 +193,7 @@ class TrainLeWm(TrainBase):
             self.args.encoder_scale,
             patch_size=self.args.patch_size,
             image_size=self.args.img_size,
-            pretrained=False,
+            pretrained=self.args.pretrained,
             use_mask_token=False,
         )
         hidden_dim = encoder.config.hidden_size
@@ -216,8 +232,12 @@ class TrainLeWm(TrainBase):
         self.sigreg = SIGReg(**sigreg_kwargs).cuda()
         self.sigreg_weight = self.args.sigreg_weight
 
+        if self.args.freeze_encoder:
+            for param in self.policy.encoder.parameters():
+                param.requires_grad = False
+
         self.optimizer = torch.optim.AdamW(
-            self.policy.parameters(),
+            [p for p in self.policy.parameters() if p.requires_grad],
             lr=self.args.lr,
             weight_decay=self.args.weight_decay,
         )
@@ -226,7 +246,8 @@ class TrainLeWm(TrainBase):
         print(
             f"  - encoder: ViT-{self.args.encoder_scale} "
             f"(hidden_dim={hidden_dim}, patch={self.args.patch_size}, "
-            f"img={self.args.img_size})"
+            f"img={self.args.img_size}, "
+            f"pretrained={self.args.pretrained}, freeze={self.args.freeze_encoder})"
         )
         print(
             f"  - wm: history_size={self.args.history_size}, "
@@ -268,7 +289,8 @@ class TrainLeWm(TrainBase):
                 result["loss"].backward()
                 if self.args.grad_clip is not None and self.args.grad_clip > 0:
                     torch.nn.utils.clip_grad_norm_(
-                        self.policy.parameters(), self.args.grad_clip
+                        [p for p in self.policy.parameters() if p.requires_grad],
+                        self.args.grad_clip,
                     )
                 self.optimizer.step()
                 batch_result_list.append(self.detach_batch_result(result))
