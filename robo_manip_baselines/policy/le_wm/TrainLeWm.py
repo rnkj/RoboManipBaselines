@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.utils.data
 from stable_pretraining.backbone.utils import vit_hf
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -71,6 +72,30 @@ class TrainLeWm(TrainBase):
         parser.add_argument("--sigreg_num_proj", type=int, default=1024)
         parser.add_argument("--weight_decay", type=float, default=1e-3)
         parser.add_argument("--grad_clip", type=float, default=1.0)
+        parser.add_argument(
+            "--warmup_ratio",
+            type=float,
+            default=0.2,
+            help=(
+                "Fraction of total epochs used for linear LR warmup "
+                "(then cosine annealing). Set 0 to disable scheduler."
+            ),
+        )
+        parser.add_argument(
+            "--warmup_start_factor",
+            type=float,
+            default=0.01,
+            help="Initial LR scale at the start of warmup (relative to --lr).",
+        )
+        parser.add_argument(
+            "--use_bf16",
+            action="store_true",
+            default=False,
+            help=(
+                "Enable bf16 mixed-precision training via torch.autocast "
+                "(matches official Lightning precision='bf16')."
+            ),
+        )
         parser.add_argument(
             "--pretrained",
             action="store_true",
@@ -187,6 +212,9 @@ class TrainLeWm(TrainBase):
             "num_preds": self.args.num_preds,
             "predictor": predictor_kwargs,
             "sigreg": {"weight": self.args.sigreg_weight, "kwargs": sigreg_kwargs},
+            "warmup_ratio": self.args.warmup_ratio,
+            "warmup_start_factor": self.args.warmup_start_factor,
+            "use_bf16": self.args.use_bf16,
         }
 
         encoder = vit_hf(
@@ -242,6 +270,25 @@ class TrainLeWm(TrainBase):
             weight_decay=self.args.weight_decay,
         )
 
+        if self.args.warmup_ratio > 0:
+            total_epochs = max(self.args.num_epochs, 1)
+            warmup_epochs = max(int(self.args.warmup_ratio * total_epochs), 1)
+            cosine_epochs = max(total_epochs - warmup_epochs, 1)
+            warmup_sched = LinearLR(
+                self.optimizer,
+                start_factor=self.args.warmup_start_factor,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            cosine_sched = CosineAnnealingLR(self.optimizer, T_max=cosine_epochs)
+            self.lr_scheduler = SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_sched, cosine_sched],
+                milestones=[warmup_epochs],
+            )
+        else:
+            self.lr_scheduler = None
+
         self.print_policy_info()
         print(
             f"  - encoder: ViT-{self.args.encoder_scale} "
@@ -255,6 +302,26 @@ class TrainLeWm(TrainBase):
             f"skip={self.args.skip}, "
             f"effective_act_dim={effective_act_dim}, embed_dim={embed_dim}"
         )
+
+        # count the number of parameters
+        total_all = sum(p.numel() for p in self.policy.parameters())
+        trainable_all = sum(
+            p.numel() for p in self.policy.parameters() if p.requires_grad
+        )
+        print(
+            f"  - params: total={total_all:,} ({total_all / 1e6:.2f}M), "
+            f"trainable={trainable_all:,} ({trainable_all / 1e6:.2f}M)"
+        )
+        #for name, module in [
+        #    ("encoder", self.policy.encoder),
+        #    ("predictor", self.policy.predictor),
+        #    ("action_encoder", self.policy.action_encoder),
+        #    ("projector", self.policy.projector),
+        #    ("pred_proj", self.policy.pred_proj),
+        #]:
+        #    total_m = sum(p.numel() for p in module.parameters())
+        #    trainable_m = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        #    print(f"  - {name}: total={total_m:,}, trainable={trainable_m:,}")
 
     def _forward_batch(self, batch):
         batch = {k: v.cuda(non_blocking=True) for k, v in batch.items()}
@@ -279,13 +346,19 @@ class TrainLeWm(TrainBase):
             "sigreg_loss": sigreg_loss,
         }
 
+    def _forward_with_amp(self, batch):
+        if self.args.use_bf16:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                return self._forward_batch(batch)
+        return self._forward_batch(batch)
+
     def train_loop(self):
         for epoch in tqdm(range(self.args.num_epochs)):
             self.policy.train()
             batch_result_list = []
             for batch in self.train_dataloader:
                 self.optimizer.zero_grad()
-                result = self._forward_batch(batch)
+                result = self._forward_with_amp(batch)
                 result["loss"].backward()
                 if self.args.grad_clip is not None and self.args.grad_clip > 0:
                     torch.nn.utils.clip_grad_norm_(
@@ -300,10 +373,14 @@ class TrainLeWm(TrainBase):
                 self.policy.eval()
                 batch_result_list = []
                 for batch in self.val_dataloader:
-                    result = self._forward_batch(batch)
+                    result = self._forward_with_amp(batch)
                     batch_result_list.append(self.detach_batch_result(result))
                 epoch_summary = self.log_epoch_summary(batch_result_list, "val", epoch)
                 self.update_best_ckpt(epoch_summary)
+
+            self.writer.add_scalar("lr", self.optimizer.param_groups[0]["lr"], epoch)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
 
             if epoch % max(self.args.num_epochs // 10, 1) == 0:
                 self.save_current_ckpt(f"epoch{epoch:0>3}")
