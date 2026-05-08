@@ -30,7 +30,6 @@ class TrainLeWm(TrainBase):
         parser.set_defaults(batch_size=128)
         parser.set_defaults(num_epochs=100)
         parser.set_defaults(lr=5e-5)
-        parser.set_defaults(skip=5)
 
         parser.add_argument(
             "--frameskip",
@@ -125,13 +124,13 @@ class TrainLeWm(TrainBase):
         parser.add_argument(
             "--crop_box",
             type=int,
-            nargs=4,
+            nargs=2,
             default=None,
-            metavar=("TOP", "LEFT", "H", "W"),
+            metavar=("WIDTH", "HEIGHT"),
             help=(
-                "Apply a fixed crop (top, left, height, width) to every image "
-                "before ToDtype. Shared across train/eval/goal. Default: None "
-                "(disabled, legacy behavior)."
+                "Apply a center crop of size (width, height) to every image "
+                "before ToDtype. Shared across train/eval/goal. "
+                "Default: None (disabled, legacy behavior)."
             ),
         )
         parser.add_argument(

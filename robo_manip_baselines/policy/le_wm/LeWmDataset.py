@@ -14,18 +14,6 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
-class _FixedCrop(torch.nn.Module):
-    def __init__(self, top, left, height, width):
-        super().__init__()
-        self.top = int(top)
-        self.left = int(left)
-        self.height = int(height)
-        self.width = int(width)
-
-    def forward(self, img):
-        return v2.functional.crop(img, self.top, self.left, self.height, self.width)
-
-
 class WindowConsistentRandomCrop(torch.nn.Module):
     """RandomCrop that samples one (top, left) per call and applies it to all
     leading dims, so every frame in a (num_steps, C, H, W) window receives the
@@ -51,9 +39,11 @@ class WindowConsistentRandomCrop(torch.nn.Module):
 def build_image_transforms(model_meta_info, training):
     """Construct the image transform pipeline shared by Dataset and Rollout.
 
-    With both `crop_box` and `random_crop_shape` absent (legacy checkpoints),
-    the resulting Compose is identical to the original
-    `[ToDtype, Resize, Normalize]` pipeline.
+    `crop_box`: a `(width, height)` center crop applied before any other op
+    (the centers of the input and the cropped image are aligned). With both
+    `crop_box` and `random_crop_shape` absent (legacy checkpoints), the
+    resulting Compose is identical to the original `[ToDtype, Resize,
+    Normalize]` pipeline.
     """
     img_size = model_meta_info["data"]["img_size"]
     image_meta = model_meta_info.get("image", {})
@@ -62,7 +52,8 @@ def build_image_transforms(model_meta_info, training):
 
     ops = []
     if crop_box is not None:
-        ops.append(_FixedCrop(*crop_box))
+        # crop_box is (width, height); torchvision CenterCrop expects (height, width).
+        ops.append(v2.CenterCrop(size=(int(crop_box[1]), int(crop_box[0]))))
     ops.append(v2.ToDtype(torch.float32, scale=True))
     if random_crop_shape is not None:
         if training:
