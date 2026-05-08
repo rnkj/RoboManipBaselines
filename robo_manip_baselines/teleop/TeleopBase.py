@@ -612,12 +612,16 @@ class TeleopBase(OperationDataMixin, ABC):
                     self.info["depth_images"][camera_name]
                 )
                 depth_images.append(cv2.resize(depth_image, resized_image_size))
-        window_image = cv2.vconcat(
-            (
-                cv2.hconcat((cv2.vconcat(rgb_images), cv2.vconcat(depth_images))),
-                phase_image,
+
+        if len(rgb_images) == 0:
+            window_image = phase_image
+        else:
+            window_image = cv2.vconcat(
+                (
+                    cv2.hconcat((cv2.vconcat(rgb_images), cv2.vconcat(depth_images))),
+                    phase_image,
+                )
             )
-        )
         cv2.namedWindow(
             "image",
             flags=(cv2.WINDOW_AUTOSIZE | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL),
