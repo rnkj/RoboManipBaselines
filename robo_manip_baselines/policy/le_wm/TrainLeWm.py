@@ -122,13 +122,13 @@ class TrainLeWm(TrainBase):
             help="Freeze encoder parameters; only predictor/projector/action_encoder are trained.",
         )
         parser.add_argument(
-            "--crop_box",
+            "--crop_shape",
             type=int,
             nargs=2,
             default=None,
-            metavar=("WIDTH", "HEIGHT"),
+            metavar=("HEIGHT", "WIDTH"),
             help=(
-                "Apply a center crop of size (width, height) to every image "
+                "Apply a center crop of size (height, width) to every image "
                 "before ToDtype. Shared across train/eval/goal. "
                 "Default: None (disabled, legacy behavior)."
             ),
@@ -160,7 +160,7 @@ class TrainLeWm(TrainBase):
                 "frameskip": self.args.frameskip,
             }
         )
-        self.model_meta_info["image"]["crop_box"] = self.args.crop_box
+        self.model_meta_info["image"]["crop_shape"] = self.args.crop_shape
         self.model_meta_info["image"]["random_crop_shape"] = self.args.random_crop_shape
 
     def setup_dataset(self):

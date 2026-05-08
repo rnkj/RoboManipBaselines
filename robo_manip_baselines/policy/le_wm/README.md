@@ -13,6 +13,8 @@ cd robo_manip_baselines
 python ./bin/Train.py LeWm \
     --dataset_dir ./dataset/MujocoXarm7Pusht_Dataset100 \
     --camera_name front \
+    --crop_shape 448 448 \
+    --random_crop_shape 200 200 \
     --num_epoch 10000 \
     --use_bf16 \
     --num_workers 4 \

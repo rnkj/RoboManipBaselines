@@ -39,21 +39,20 @@ class WindowConsistentRandomCrop(torch.nn.Module):
 def build_image_transforms(model_meta_info, training):
     """Construct the image transform pipeline shared by Dataset and Rollout.
 
-    `crop_box`: a `(width, height)` center crop applied before any other op
+    `crop_shape`: a `(height, width)` center crop applied before any other op
     (the centers of the input and the cropped image are aligned). With both
-    `crop_box` and `random_crop_shape` absent (legacy checkpoints), the
+    `crop_shape` and `random_crop_shape` absent (legacy checkpoints), the
     resulting Compose is identical to the original `[ToDtype, Resize,
     Normalize]` pipeline.
     """
     img_size = model_meta_info["data"]["img_size"]
     image_meta = model_meta_info.get("image", {})
-    crop_box = image_meta.get("crop_box")
+    crop_shape = image_meta.get("crop_shape")
     random_crop_shape = image_meta.get("random_crop_shape")
 
     ops = []
-    if crop_box is not None:
-        # crop_box is (width, height); torchvision CenterCrop expects (height, width).
-        ops.append(v2.CenterCrop(size=(int(crop_box[1]), int(crop_box[0]))))
+    if crop_shape is not None:
+        ops.append(v2.CenterCrop(size=(int(crop_shape[0]), int(crop_shape[1]))))
     ops.append(v2.ToDtype(torch.float32, scale=True))
     if random_crop_shape is not None:
         if training:
