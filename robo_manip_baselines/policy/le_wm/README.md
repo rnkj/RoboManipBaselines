@@ -55,10 +55,6 @@ decimation (RolloutBase's standard fallback) and `--frameskip` is always
 restored from the checkpoint; the planner consumes one bundled action per
 `args.skip` env steps.
 
-Note: checkpoints produced by older revisions of this policy stored only
-`"skip"` (overloaded as the bundle width) and are **not backwards-compatible**
-with the current code — they need to be retrained.
-
 ## Limitations
 
 - **Single camera**: `JEPA.encode` expects `batch["pixels"]` as `(B, T, C, H, W)`;

@@ -14,6 +14,66 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
+class _FixedCrop(torch.nn.Module):
+    def __init__(self, top, left, height, width):
+        super().__init__()
+        self.top = int(top)
+        self.left = int(left)
+        self.height = int(height)
+        self.width = int(width)
+
+    def forward(self, img):
+        return v2.functional.crop(img, self.top, self.left, self.height, self.width)
+
+
+class WindowConsistentRandomCrop(torch.nn.Module):
+    """RandomCrop that samples one (top, left) per call and applies it to all
+    leading dims, so every frame in a (num_steps, C, H, W) window receives the
+    same crop. Time-consistent within a sample, independent across samples.
+    """
+
+    def __init__(self, size):
+        super().__init__()
+        self.size = (int(size[0]), int(size[1]))
+
+    def forward(self, img):
+        H, W = img.shape[-2], img.shape[-1]
+        h, w = self.size
+        if h > H or w > W:
+            raise ValueError(
+                f"random_crop_shape {self.size} exceeds input spatial size {(H, W)}"
+            )
+        top = int(torch.randint(0, H - h + 1, (1,)).item())
+        left = int(torch.randint(0, W - w + 1, (1,)).item())
+        return v2.functional.crop(img, top, left, h, w)
+
+
+def build_image_transforms(model_meta_info, training):
+    """Construct the image transform pipeline shared by Dataset and Rollout.
+
+    With both `crop_box` and `random_crop_shape` absent (legacy checkpoints),
+    the resulting Compose is identical to the original
+    `[ToDtype, Resize, Normalize]` pipeline.
+    """
+    img_size = model_meta_info["data"]["img_size"]
+    image_meta = model_meta_info.get("image", {})
+    crop_box = image_meta.get("crop_box")
+    random_crop_shape = image_meta.get("random_crop_shape")
+
+    ops = []
+    if crop_box is not None:
+        ops.append(_FixedCrop(*crop_box))
+    ops.append(v2.ToDtype(torch.float32, scale=True))
+    if random_crop_shape is not None:
+        if training:
+            ops.append(WindowConsistentRandomCrop(size=random_crop_shape))
+        else:
+            ops.append(v2.CenterCrop(size=tuple(random_crop_shape)))
+    ops.append(v2.Resize((img_size, img_size), antialias=True))
+    ops.append(v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD))
+    return v2.Compose(ops)
+
+
 class LeWmDataset(DatasetBase):
     """Dataset to train LeWm (LeWorldModel) policy.
 
@@ -31,13 +91,8 @@ class LeWmDataset(DatasetBase):
     """
 
     def setup_image_transforms(self):
-        img_size = self.model_meta_info["data"]["img_size"]
-        self.image_transforms = v2.Compose(
-            [
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Resize((img_size, img_size), antialias=True),
-                v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
+        self.image_transforms = build_image_transforms(
+            self.model_meta_info, training=True
         )
 
     def setup_variables(self):

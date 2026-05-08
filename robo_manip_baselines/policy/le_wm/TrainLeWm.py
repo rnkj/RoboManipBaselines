@@ -121,6 +121,30 @@ class TrainLeWm(TrainBase):
             default=False,
             help="Freeze encoder parameters; only predictor/projector/action_encoder are trained.",
         )
+        parser.add_argument(
+            "--crop_box",
+            type=int,
+            nargs=4,
+            default=None,
+            metavar=("TOP", "LEFT", "H", "W"),
+            help=(
+                "Apply a fixed crop (top, left, height, width) to every image "
+                "before ToDtype. Shared across train/eval/goal. Default: None "
+                "(disabled, legacy behavior)."
+            ),
+        )
+        parser.add_argument(
+            "--random_crop_shape",
+            type=int,
+            nargs=2,
+            default=None,
+            metavar=("H", "W"),
+            help=(
+                "Window-consistent RandomCrop (training) / CenterCrop "
+                "(eval/goal) applied after ToDtype. Use ~85-95%% of the "
+                "post-fixed-crop resolution. Default: None (disabled)."
+            ),
+        )
 
     def setup_model_meta_info(self):
         self.args.camera_names = [self.args.camera_name]
@@ -136,6 +160,8 @@ class TrainLeWm(TrainBase):
                 "frameskip": self.args.frameskip,
             }
         )
+        self.model_meta_info["image"]["crop_box"] = self.args.crop_box
+        self.model_meta_info["image"]["random_crop_shape"] = self.args.random_crop_shape
 
     def setup_dataset(self):
         if self.args.enable_rmb_cache and self.args.use_cached_dataset:

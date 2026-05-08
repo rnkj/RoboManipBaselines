@@ -6,7 +6,6 @@ import cv2
 import matplotlib.pylab as plt
 import numpy as np
 import torch
-from torchvision.transforms import v2
 
 from robo_manip_baselines.common import (
     DataKey,
@@ -21,7 +20,7 @@ from jepa import JEPA  # noqa: E402
 from module import MLP, ARPredictor, Embedder  # noqa: E402
 from stable_pretraining.backbone.utils import vit_hf  # noqa: E402
 
-from .LeWmDataset import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
+from .LeWmDataset import build_image_transforms  # noqa: E402
 
 
 class RolloutLeWm(RolloutBase):
@@ -219,12 +218,8 @@ class RolloutLeWm(RolloutBase):
         super().setup_plot(fig_ax)
 
     def _build_image_transforms(self):
-        self.image_transforms = v2.Compose(
-            [
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Resize((self.img_size, self.img_size), antialias=True),
-                v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
+        self.image_transforms = build_image_transforms(
+            self.model_meta_info, training=False
         )
 
     def _preprocess_rgb(self, rgb_hwc_u8):
