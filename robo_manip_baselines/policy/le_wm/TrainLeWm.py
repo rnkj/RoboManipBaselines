@@ -30,6 +30,7 @@ class TrainLeWm(TrainBase):
         parser.set_defaults(batch_size=128)
         parser.set_defaults(num_epochs=100)
         parser.set_defaults(lr=5e-5)
+        parser.set_defaults(skip=5)
 
         parser.add_argument(
             "--frameskip",
