@@ -27,9 +27,10 @@ class TrainLeWm(TrainBase):
 
     def set_additional_args(self, parser):
         parser.set_defaults(enable_rmb_cache=False)
-        parser.set_defaults(batch_size=32)
+        parser.set_defaults(batch_size=128)
         parser.set_defaults(num_epochs=100)
         parser.set_defaults(lr=5e-5)
+        parser.set_defaults(skip=5)
 
         parser.add_argument(
             "--camera_name",
@@ -75,7 +76,7 @@ class TrainLeWm(TrainBase):
         parser.add_argument(
             "--warmup_ratio",
             type=float,
-            default=0.2,
+            default=0.01,
             help=(
                 "Fraction of total epochs used for linear LR warmup "
                 "(then cosine annealing). Set 0 to disable scheduler."
@@ -84,7 +85,7 @@ class TrainLeWm(TrainBase):
         parser.add_argument(
             "--warmup_start_factor",
             type=float,
-            default=0.01,
+            default=0.0,
             help="Initial LR scale at the start of warmup (relative to --lr).",
         )
         parser.add_argument(
@@ -168,7 +169,7 @@ class TrainLeWm(TrainBase):
             "persistent_workers": True,
             "prefetch_factor": 4,
         }
-        self.train_dataloader = DataLoader(train_set, shuffle=True, **loader_kwargs)
+        self.train_dataloader = DataLoader(train_set, shuffle=True, drop_last=True, **loader_kwargs)
         self.val_dataloader = DataLoader(val_set, shuffle=False, **loader_kwargs)
 
         self.writer = SummaryWriter(self.args.checkpoint_dir)

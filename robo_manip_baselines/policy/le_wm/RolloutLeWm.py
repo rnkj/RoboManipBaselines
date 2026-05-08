@@ -54,11 +54,11 @@ class RolloutLeWm(RolloutBase):
         parser.add_argument(
             "--receding_horizon",
             type=int,
-            default=1,
+            default=5,
             help="number of bundled-action steps executed before replanning",
         )
         parser.add_argument("--num_samples", type=int, default=300)
-        parser.add_argument("--n_cem_iters", type=int, default=3)
+        parser.add_argument("--n_cem_iters", type=int, default=10)
         parser.add_argument("--topk", type=int, default=30)
         parser.add_argument("--var_scale", type=float, default=1.0)
         parser.add_argument(
