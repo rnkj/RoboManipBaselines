@@ -240,6 +240,13 @@ class TrainLeWm(TrainBase):
             "num_proj": self.args.sigreg_num_proj,
         }
 
+        batches_per_epoch = max(len(self.train_dataloader), 1)
+        total_steps = max(self.args.num_epochs * batches_per_epoch, 1)
+        if self.args.warmup_ratio > 0:
+            warmup_steps = max(int(self.args.warmup_ratio * total_steps), 1)
+        else:
+            warmup_steps = 0
+
         # Save reconstruction args to meta info before instantiation
         self.model_meta_info["policy"]["args"] = {
             "encoder_scale": self.args.encoder_scale,
@@ -252,6 +259,10 @@ class TrainLeWm(TrainBase):
             "sigreg": {"weight": self.args.sigreg_weight, "kwargs": sigreg_kwargs},
             "warmup_ratio": self.args.warmup_ratio,
             "warmup_start_factor": self.args.warmup_start_factor,
+            "warmup_steps": warmup_steps,
+            "total_steps": total_steps,
+            "batches_per_epoch": batches_per_epoch,
+            "lr_schedule_unit": "step",
             "use_bf16": self.args.use_bf16,
         }
 
@@ -309,20 +320,18 @@ class TrainLeWm(TrainBase):
         )
 
         if self.args.warmup_ratio > 0:
-            total_epochs = max(self.args.num_epochs, 1)
-            warmup_epochs = max(int(self.args.warmup_ratio * total_epochs), 1)
-            cosine_epochs = max(total_epochs - warmup_epochs, 1)
+            cosine_steps = max(total_steps - warmup_steps, 1)
             warmup_sched = LinearLR(
                 self.optimizer,
                 start_factor=self.args.warmup_start_factor,
                 end_factor=1.0,
-                total_iters=warmup_epochs,
+                total_iters=warmup_steps,
             )
-            cosine_sched = CosineAnnealingLR(self.optimizer, T_max=cosine_epochs)
+            cosine_sched = CosineAnnealingLR(self.optimizer, T_max=cosine_steps)
             self.lr_scheduler = SequentialLR(
                 self.optimizer,
                 schedulers=[warmup_sched, cosine_sched],
-                milestones=[warmup_epochs],
+                milestones=[warmup_steps],
             )
         else:
             self.lr_scheduler = None
@@ -339,6 +348,11 @@ class TrainLeWm(TrainBase):
             f"num_preds={self.args.num_preds}, "
             f"skip={self.args.skip}, frameskip={self.args.frameskip}, "
             f"effective_act_dim={effective_act_dim}, embed_dim={embed_dim}"
+        )
+        print(
+            f"  - lr sched: warmup_steps={warmup_steps}, "
+            f"total_steps={total_steps} "
+            f"(batches/epoch={batches_per_epoch}, num_epochs={self.args.num_epochs})"
         )
 
         # count the number of parameters
@@ -391,6 +405,7 @@ class TrainLeWm(TrainBase):
         return self._forward_batch(batch)
 
     def train_loop(self):
+        global_step = 0
         for epoch in tqdm(range(self.args.num_epochs)):
             self.policy.train()
             batch_result_list = []
@@ -404,7 +419,13 @@ class TrainLeWm(TrainBase):
                         self.args.grad_clip,
                     )
                 self.optimizer.step()
+                if self.lr_scheduler is not None:
+                    self.lr_scheduler.step()
+                self.writer.add_scalar(
+                    "lr", self.optimizer.param_groups[0]["lr"], global_step
+                )
                 batch_result_list.append(self.detach_batch_result(result))
+                global_step += 1
             self.log_epoch_summary(batch_result_list, "train", epoch)
 
             with torch.inference_mode():
@@ -415,10 +436,6 @@ class TrainLeWm(TrainBase):
                     batch_result_list.append(self.detach_batch_result(result))
                 epoch_summary = self.log_epoch_summary(batch_result_list, "val", epoch)
                 self.update_best_ckpt(epoch_summary)
-
-            self.writer.add_scalar("lr", self.optimizer.param_groups[0]["lr"], epoch)
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
 
             if epoch % max(self.args.num_epochs // 10, 1) == 0:
                 self.save_current_ckpt(f"epoch{epoch:0>3}")
