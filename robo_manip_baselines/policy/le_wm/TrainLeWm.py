@@ -94,7 +94,7 @@ class TrainLeWm(TrainBase):
         parser.add_argument(
             "--warmup_start_factor",
             type=float,
-            default=0.0,
+            default=0.01,
             help="Initial LR scale at the start of warmup (relative to --lr).",
         )
         parser.add_argument(
