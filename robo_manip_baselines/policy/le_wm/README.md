@@ -11,26 +11,11 @@ pip install -e ".[le-wm]"
 ```bash
 cd robo_manip_baselines
 python ./bin/Train.py LeWm \
-    --dataset_dir ./dataset/MujocoUR5eToolbox_Dataset100 \
+    --dataset_dir ./dataset/MujocoXarm7Pusht_Dataset100 \
     --camera_name front \
-    --skip 1 \
-    --history_size 3 \
-    --num_preds 1 \
-    --encoder_scale tiny \
-    --img_size 224 \
-    --patch_size 14 \
-    --embed_dim 192 \
-    --pred_depth 4 \
-    --pred_heads 8 \
-    --pred_mlp_dim 1024 \
-    --pred_dim_head 64 \
-    --pred_dropout 0.1 \
-    --batch_size 64 \
-    --num_epochs 1000 \
-    --lr 3e-4 \
-    --weight_decay 1e-3 \
-    --grad_clip 1.0 \
-    --sigreg_weight 0.09 \
+    --num_epoch 10000 \
+    --use_bf16 \
+    --num_workers 4 \
     --use_cached_dataset
 ```
 
@@ -48,23 +33,31 @@ python ./bin/Rollout.py LeWm MujocoUR5eToolbox \
     --goal_episode_idx 0 \
     --goal_step_idx -1 \
     --horizon 5 \
-    --receding_horizon 1 \
+    --receding_horizon 5 \
     --num_samples 300 \
-    --n_cem_iters 3 \
+    --n_cem_iters 30 \
     --topk 30 \
     --var_scale 0.5 \
-    --warm_start \
-    --max_duration 30 \
-    --action_clip
+    --max_duration 30
 ```
 
-Note: at training time, `--skip` plays a dual role — it is both the RmbData
-decimation stride for states/images and le-wm's `frameskip` (the number of
-raw action frames bundled into one LeWm step token). The single value is
-stored in `model_meta_info["data"]["skip"]`. At rollout time, `--skip` (in
-the RolloutBase sense of an env-step interval) is always forced to 1
-because LeWm feeds one raw action per env step; the training-time bundle
-width is restored from `model_meta_info["data"]["skip"]`.
+Note: two stride parameters are applied in order:
+
+1. `--skip` (RoboManipBaselines convention): raw-frame decimation stride.
+   For example, `--skip 3` turns 30 FPS data into a pseudo 10 FPS timeline.
+2. `--frameskip` (upstream le-wm semantics, default 5): number of consecutive
+   post-skip action frames bundled into one world-model token. The action
+   encoder input dimension is therefore `frameskip * action_dim`.
+
+Both values are persisted in `model_meta_info["data"]` (`"skip"` and
+`"frameskip"`). At rollout time, `--skip` defaults to the training-time
+decimation (RolloutBase's standard fallback) and `--frameskip` is always
+restored from the checkpoint; the planner consumes one bundled action per
+`args.skip` env steps.
+
+Note: checkpoints produced by older revisions of this policy stored only
+`"skip"` (overloaded as the bundle width) and are **not backwards-compatible**
+with the current code — they need to be retrained.
 
 ## Limitations
 

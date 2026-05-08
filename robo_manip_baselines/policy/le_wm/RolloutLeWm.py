@@ -30,19 +30,20 @@ class RolloutLeWm(RolloutBase):
     LeWm is a world model (no direct action head), so we run Cross-Entropy
     Method planning over action sequences, scoring each candidate by the
     goal-embedding MSE returned from JEPA.get_cost. A first-in-first-out
-    action buffer decouples planning cadence (once every receding_horizon *
-    skip env steps) from the per-step env.step() consumption.
+    action buffer decouples planning cadence (once every
+    `receding_horizon * frameskip * args.skip` env steps) from the per-step
+    env.step() consumption.
 
     The CEM loop is written to mirror stable_worldmodel.solver.CEMSolver so
     that a parity test is possible (see tests/TestLeWmCem.py).
     """
 
     def set_additional_args(self, parser):
-        # `args.skip` is the rollout step interval (RolloutBase semantics);
-        # forced to 1 because LeWm plans raw actions and pops one per env step.
-        # The training-time bundle width (raw frames per LeWm step token) is
-        # read separately from `model_meta_info["data"]["skip"]` in setup_policy.
-        parser.set_defaults(skip=1)
+        # `args.skip` is the env-step interval used by RolloutBase; if not
+        # given on the CLI, RolloutBase falls back to the training-time
+        # decimation `model_meta_info["data"]["skip"]`. The per-thinned-step
+        # bundle width is recovered separately from
+        # `model_meta_info["data"]["frameskip"]` in setup_policy.
 
         # Planning hyper-parameters.
         parser.add_argument(
@@ -54,11 +55,11 @@ class RolloutLeWm(RolloutBase):
         parser.add_argument(
             "--receding_horizon",
             type=int,
-            default=1,
+            default=5,
             help="number of bundled-action steps executed before replanning",
         )
         parser.add_argument("--num_samples", type=int, default=300)
-        parser.add_argument("--n_cem_iters", type=int, default=3)
+        parser.add_argument("--n_cem_iters", type=int, default=10)
         parser.add_argument("--topk", type=int, default=30)
         parser.add_argument("--var_scale", type=float, default=1.0)
         parser.add_argument(
@@ -93,16 +94,16 @@ class RolloutLeWm(RolloutBase):
         data_meta = meta["data"]
         policy_args = meta["policy"]["args"]
 
-        # `self.skip` is the training-time action bundle width (raw frames per
-        # LeWm step token), which is unified with the RmbData decimation stride
-        # under `data_meta["skip"]` (see LeWmDataset).
-        # `self.args.skip` is the rollout step interval forced to 1 in
-        # set_additional_args.
-        self.skip = data_meta["skip"]
+        # `self.frameskip` is the training-time action bundle width (number of
+        # post-skip action frames packed into one LeWm step token). It is
+        # restored from `data_meta["frameskip"]`. The raw-frame decimation
+        # stride is exposed via `args.skip` (RolloutBase semantics: env-step
+        # interval, defaulting to the training-time `data_meta["skip"]`).
+        self.frameskip = data_meta["frameskip"]
         self.history_size = data_meta["history_size"]
         self.num_preds = data_meta["num_preds"]
         self.img_size = data_meta["img_size"]
-        self.effective_act_dim = self.skip * self.action_dim
+        self.effective_act_dim = self.frameskip * self.action_dim
 
         if self.args.horizon < self.history_size:
             raise ValueError(
@@ -174,8 +175,8 @@ class RolloutLeWm(RolloutBase):
         )
         print(
             f"  - wm: history_size={self.history_size}, num_preds={self.num_preds}, "
-            f"skip={self.skip}, effective_act_dim={self.effective_act_dim}, "
-            f"embed_dim={embed_dim}"
+            f"skip={self.args.skip}, frameskip={self.frameskip}, "
+            f"effective_act_dim={self.effective_act_dim}, embed_dim={embed_dim}"
         )
         print(
             f"  - planner: horizon={self.args.horizon}, "
@@ -339,8 +340,8 @@ class RolloutLeWm(RolloutBase):
         best = mean.detach().cpu().numpy()  # (T, A)
         raw_list = []
         for k in range(self.args.receding_horizon):
-            bundled = best[k].reshape(self.skip, self.action_dim)
-            for f in range(self.skip):
+            bundled = best[k].reshape(self.frameskip, self.action_dim)
+            for f in range(self.frameskip):
                 raw = denormalize_data(bundled[f], self.model_meta_info["action"])
                 if self.args.action_clip:
                     raw = np.clip(

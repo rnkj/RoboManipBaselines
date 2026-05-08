@@ -6,6 +6,7 @@ from robo_manip_baselines.common import (
     DataKey,
     DatasetBase,
     RmbData,
+    get_skipped_data_seq,
     normalize_data,
 )
 
@@ -17,10 +18,14 @@ class LeWmDataset(DatasetBase):
     """Dataset to train LeWm (LeWorldModel) policy.
 
     Produces num_steps-windowed samples compatible with le-wm's lejepa_forward.
-    `skip` is reused as le-wm's `frameskip` (raw action bundling width and
-    state/image decimation stride):
+    Two stride parameters are applied in order:
+      1. `skip` (RoboManipBaselines convention): raw-frame decimation stride.
+         e.g. `--skip 3` turns 30 FPS data into a pseudo 10 FPS timeline.
+      2. `frameskip` (upstream le-wm semantics): number of consecutive
+         (post-skip) action frames bundled into one world-model token.
+    Output shapes:
       - pixels: (num_steps, 3, img_size, img_size) float32, ImageNet-normalized
-      - action: (num_steps, skip * action_dim) float32, normalized
+      - action: (num_steps, frameskip * action_dim) float32, normalized
       - observation: (num_steps, state_dim) float32, normalized
         (currently not consumed by JEPA.encode; carried through for future extension)
     """
@@ -37,16 +42,17 @@ class LeWmDataset(DatasetBase):
 
     def setup_variables(self):
         skip = self.model_meta_info["data"]["skip"]
+        frameskip = self.model_meta_info["data"]["frameskip"]
         num_steps = self.model_meta_info["data"]["num_steps"]
-        span = num_steps * skip
+        span_thinned = num_steps * frameskip
 
         self.chunk_info_list = []
         for episode_idx, filename in enumerate(self.filenames):
             with RmbData(filename) as rmb_data:
-                episode_len = rmb_data[DataKey.TIME].shape[0]
-            if episode_len < span:
+                episode_len_thinned = rmb_data[DataKey.TIME][::skip].shape[0]
+            if episode_len_thinned < span_thinned:
                 continue
-            for start_time_idx in range(0, episode_len - span + 1):
+            for start_time_idx in range(0, episode_len_thinned - span_thinned + 1):
                 self.chunk_info_list.append((episode_idx, start_time_idx))
 
     def __len__(self):
@@ -54,44 +60,51 @@ class LeWmDataset(DatasetBase):
 
     def __getitem__(self, chunk_idx):
         skip = self.model_meta_info["data"]["skip"]
+        frameskip = self.model_meta_info["data"]["frameskip"]
         num_steps = self.model_meta_info["data"]["num_steps"]
-        span = num_steps * skip
+        span_thinned = num_steps * frameskip
         camera_name = self.model_meta_info["image"]["camera_names"][0]
         episode_idx, start = self.chunk_info_list[chunk_idx]
-        end = start + span
+        end = start + span_thinned
 
         with RmbData(self.filenames[episode_idx], self.enable_rmb_cache) as rmb_data:
-            # Load state: pick raw frames at stride `skip` (num_steps, state_dim)
+            # Load state on the thinned timeline, sampled at `frameskip` stride
+            # (num_steps, state_dim).
             if len(self.model_meta_info["state"]["keys"]) == 0:
                 state = np.zeros((num_steps, 0), dtype=np.float64)
             else:
                 state = np.concatenate(
                     [
-                        rmb_data[key][start:end:skip]
+                        get_skipped_data_seq(rmb_data[key][:], key, skip)[
+                            start:end:frameskip
+                        ]
                         for key in self.model_meta_info["state"]["keys"]
                     ],
                     axis=1,
                 )
 
-            # Load action: keep every raw frame within the window,
-            # (span, action_dim) -> (num_steps, skip, action_dim)
+            # Load action on the thinned timeline; keep every (post-skip) frame
+            # in the window: (span_thinned, action_dim) -> (num_steps, frameskip, action_dim)
             action_window = np.concatenate(
                 [
-                    rmb_data[key][start:end]
+                    get_skipped_data_seq(rmb_data[key][:], key, skip)[start:end]
                     for key in self.model_meta_info["action"]["keys"]
                 ],
                 axis=1,
             )
             action_dim = action_window.shape[-1]
-            action = action_window.reshape(num_steps, skip, action_dim)
+            action = action_window.reshape(num_steps, frameskip, action_dim)
 
-            # Load images: (num_steps, H, W, 3) uint8 — one frame per step
-            images = rmb_data[DataKey.get_rgb_image_key(camera_name)][start:end:skip]
+            # Load images: decimate raw frames by `skip`, then take one per
+            # macro-step at `frameskip` stride. (num_steps, H, W, 3) uint8.
+            images = rmb_data[DataKey.get_rgb_image_key(camera_name)][::skip][
+                start:end:frameskip
+            ]
 
-        # Normalize state/action (action mean/std broadcasts over the skip axis)
+        # Normalize state/action (action mean/std broadcasts over the frameskip axis)
         state = normalize_data(state, self.model_meta_info["state"])
         action = normalize_data(action, self.model_meta_info["action"])
-        action = action.reshape(num_steps, skip * action_dim)
+        action = action.reshape(num_steps, frameskip * action_dim)
 
         # Reorder image axes: (num_steps, H, W, 3) -> (num_steps, 3, H, W)
         images = np.moveaxis(images, -1, -3)

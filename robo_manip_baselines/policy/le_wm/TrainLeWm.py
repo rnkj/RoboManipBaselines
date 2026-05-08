@@ -27,10 +27,19 @@ class TrainLeWm(TrainBase):
 
     def set_additional_args(self, parser):
         parser.set_defaults(enable_rmb_cache=False)
-        parser.set_defaults(batch_size=32)
+        parser.set_defaults(batch_size=128)
         parser.set_defaults(num_epochs=100)
         parser.set_defaults(lr=5e-5)
 
+        parser.add_argument(
+            "--frameskip",
+            type=int,
+            default=5,
+            help=(
+                "le-wm frameskip: number of (post-skip) action frames bundled "
+                "into one world-model token. Applied after --skip."
+            ),
+        )
         parser.add_argument(
             "--camera_name",
             type=str,
@@ -75,7 +84,7 @@ class TrainLeWm(TrainBase):
         parser.add_argument(
             "--warmup_ratio",
             type=float,
-            default=0.2,
+            default=0.01,
             help=(
                 "Fraction of total epochs used for linear LR warmup "
                 "(then cosine annealing). Set 0 to disable scheduler."
@@ -84,7 +93,7 @@ class TrainLeWm(TrainBase):
         parser.add_argument(
             "--warmup_start_factor",
             type=float,
-            default=0.01,
+            default=0.0,
             help="Initial LR scale at the start of warmup (relative to --lr).",
         )
         parser.add_argument(
@@ -124,6 +133,7 @@ class TrainLeWm(TrainBase):
                 "num_preds": self.args.num_preds,
                 "num_steps": num_steps,
                 "img_size": self.args.img_size,
+                "frameskip": self.args.frameskip,
             }
         )
 
@@ -168,7 +178,9 @@ class TrainLeWm(TrainBase):
             "persistent_workers": True,
             "prefetch_factor": 4,
         }
-        self.train_dataloader = DataLoader(train_set, shuffle=True, **loader_kwargs)
+        self.train_dataloader = DataLoader(
+            train_set, shuffle=True, drop_last=True, **loader_kwargs
+        )
         self.val_dataloader = DataLoader(val_set, shuffle=False, **loader_kwargs)
 
         self.writer = SummaryWriter(self.args.checkpoint_dir)
@@ -227,7 +239,7 @@ class TrainLeWm(TrainBase):
         hidden_dim = encoder.config.hidden_size
         embed_dim = self.args.embed_dim
         action_dim = len(self.model_meta_info["action"]["example"])
-        effective_act_dim = self.args.skip * action_dim
+        effective_act_dim = self.args.frameskip * action_dim
 
         predictor = ARPredictor(
             num_frames=self.args.history_size,
@@ -299,7 +311,7 @@ class TrainLeWm(TrainBase):
         print(
             f"  - wm: history_size={self.args.history_size}, "
             f"num_preds={self.args.num_preds}, "
-            f"skip={self.args.skip}, "
+            f"skip={self.args.skip}, frameskip={self.args.frameskip}, "
             f"effective_act_dim={effective_act_dim}, embed_dim={embed_dim}"
         )
 
@@ -312,13 +324,13 @@ class TrainLeWm(TrainBase):
             f"  - params: total={total_all:,} ({total_all / 1e6:.2f}M), "
             f"trainable={trainable_all:,} ({trainable_all / 1e6:.2f}M)"
         )
-        #for name, module in [
+        # for name, module in [
         #    ("encoder", self.policy.encoder),
         #    ("predictor", self.policy.predictor),
         #    ("action_encoder", self.policy.action_encoder),
         #    ("projector", self.policy.projector),
         #    ("pred_proj", self.policy.pred_proj),
-        #]:
+        # ]:
         #    total_m = sum(p.numel() for p in module.parameters())
         #    trainable_m = sum(p.numel() for p in module.parameters() if p.requires_grad)
         #    print(f"  - {name}: total={total_m:,}, trainable={trainable_m:,}")
