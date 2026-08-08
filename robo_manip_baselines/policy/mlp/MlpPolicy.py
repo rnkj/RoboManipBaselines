@@ -20,6 +20,7 @@ class MlpPolicy(nn.Module):
         super().__init__()
 
         # Setup Variable
+        self.num_images = num_images
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
 
@@ -31,13 +32,15 @@ class MlpPolicy(nn.Module):
         )
 
         # Instantiate image feature extractor
-        resnet_model = resnet18(
-            weights=ResNet18_Weights.DEFAULT, norm_layer=FrozenBatchNorm2d
-        )
-        self.image_feature_extractor = nn.Sequential(
-            *list(resnet_model.children())[:-1]
-        )  # Remove last layer
-        image_feature_dim = resnet_model.fc.in_features
+        image_feature_dim = 0
+        if self.num_images > 0:
+            resnet_model = resnet18(
+                weights=ResNet18_Weights.DEFAULT, norm_layer=FrozenBatchNorm2d
+            )
+            self.image_feature_extractor = nn.Sequential(
+                *list(resnet_model.children())[:-1]
+            )  # Remove last layer
+            image_feature_dim = resnet_model.fc.in_features
 
         # Instantiate linear layers
         combined_feature_dim = (
@@ -71,11 +74,10 @@ class MlpPolicy(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, state_seq, images_seq):
-        batch_size, _, _, C, H, W = images_seq.shape
+        batch_size = state_seq.shape[0]
 
         # Reshape state_seq and images_seq
         state_seq = state_seq.reshape(batch_size, -1)
-        images_seq = images_seq.reshape(batch_size, -1, C, H, W)
 
         # Extract state feature
         state_feature = self.state_feature_extractor(
@@ -83,25 +85,28 @@ class MlpPolicy(nn.Module):
         )  # (batch_size, state_feature_dim)
 
         # Extract image feature
-        image_features = []
-
-        for i in range(images_seq.shape[1]):
-            image_feature = self.image_feature_extractor(
-                images_seq[:, i]
-            )  # (batch_size, image_feature_dim, 1, 1)
-            image_feature = image_feature.view(
-                batch_size, -1
-            )  # (batch_size, image_feature_dim)
-            image_features.append(image_feature)
-        image_features = torch.cat(
-            image_features, dim=1
-        )  # (batch_size, num_images * n_obs_steps * image_feature_dim)
+        if self.num_images > 0:
+            _, _, _, C, H, W = images_seq.shape
+            images_seq = images_seq.reshape(batch_size, -1, C, H, W)
+            image_features = []
+            for i in range(images_seq.shape[1]):
+                image_feature = self.image_feature_extractor(
+                    images_seq[:, i]
+                )  # (batch_size, image_feature_dim, 1, 1)
+                image_feature = image_feature.view(
+                    batch_size, -1
+                )  # (batch_size, image_feature_dim)
+                image_features.append(image_feature)
+            image_features = torch.cat(
+                image_features, dim=1
+            )  # (batch_size, num_images * n_obs_steps * image_feature_dim)
+            combined_feature = torch.cat(
+                [state_feature, image_features], dim=1
+            )  # (batch_size, combined_feature_dim)
+        else:
+            combined_feature = state_feature
 
         # Apply linear layers
-        # FIXME: when state_dim is zero, all elements of state_feature are zero, so do not concatenate
-        combined_feature = torch.cat(
-            [state_feature, image_features], dim=1
-        )  # (batch_size, combined_feature_dim)
         action_seq = self.linear_layer_seq(
             combined_feature
         )  # (batch_size, action_dim * n_action_steps)

@@ -17,8 +17,35 @@ from robo_manip_baselines.common import (
     normalize_data,
 )
 
+from .DiffusionLowdimPolicyUtils import construct_lowdim_policy
+
 
 class RolloutDiffusionPolicy(RolloutBase):
+    def set_additional_args(self, parser):
+        parser.add_argument(
+            "--drop_initial_actions",
+            type=int,
+            default=0,
+            help="Number of initial actions to drop from each predicted action chunk.",
+        )
+
+    def setup_model_meta_info(self):
+        super().setup_model_meta_info()
+
+        if self.args.drop_initial_actions < 0:
+            raise ValueError(
+                f"[{self.__class__.__name__}] drop_initial_actions must be >= 0."
+            )
+        if (
+            self.args.drop_initial_actions
+            >= self.model_meta_info["data"]["n_action_steps"]
+        ):
+            raise ValueError(
+                f"[{self.__class__.__name__}] drop_initial_actions "
+                f"({self.args.drop_initial_actions}) must be smaller than n_action_steps "
+                f"({self.model_meta_info['data']['n_action_steps']})."
+            )
+
     def setup_policy(self):
         # For backward compatibility
         if "backbone" not in self.model_meta_info["policy"]:
@@ -34,9 +61,11 @@ class RolloutDiffusionPolicy(RolloutBase):
         print(
             f"  - horizon: {self.model_meta_info['data']['horizon']}, obs steps: {self.model_meta_info['data']['n_obs_steps']}, action steps: {self.model_meta_info['data']['n_action_steps']}"
         )
-        print(
-            f"  - image size: {self.model_meta_info['data']['image_size']}, image crop size: {self.model_meta_info['data']['image_crop_size']}"
-        )
+        print(f"  - drop initial actions: {self.args.drop_initial_actions}")
+        if len(self.camera_names) > 0:
+            print(
+                f"  - image size: {self.model_meta_info['data']['image_size']}, image crop size: {self.model_meta_info['data']['image_crop_size']}"
+            )
 
         # Construct scheduler
         if self.model_meta_info["policy"]["scheduler"] == "ddpm":
@@ -57,34 +86,48 @@ class RolloutDiffusionPolicy(RolloutBase):
             )
 
         # Construct policy
-        if self.model_meta_info["policy"]["backbone"] == "cnn":
-            from diffusion_policy.policy.diffusion_unet_hybrid_image_policy import (
-                DiffusionUnetHybridImagePolicy,
-            )
+        if len(self.camera_names) > 0:
+            if self.model_meta_info["policy"]["backbone"] == "cnn":
+                from diffusion_policy.policy.diffusion_unet_hybrid_image_policy import (
+                    DiffusionUnetHybridImagePolicy,
+                )
 
-            PolicyClass = DiffusionUnetHybridImagePolicy
-        elif self.model_meta_info["policy"]["backbone"] == "transformer":
-            from diffusion_policy.policy.diffusion_transformer_hybrid_image_policy import (
-                DiffusionTransformerHybridImagePolicy,
-            )
+                PolicyClass = DiffusionUnetHybridImagePolicy
+            elif self.model_meta_info["policy"]["backbone"] == "transformer":
+                from diffusion_policy.policy.diffusion_transformer_hybrid_image_policy import (
+                    DiffusionTransformerHybridImagePolicy,
+                )
 
-            PolicyClass = DiffusionTransformerHybridImagePolicy
+                PolicyClass = DiffusionTransformerHybridImagePolicy
+            else:
+                raise ValueError(
+                    f"[{self.__class__.__name__}] Invalid backbone: {self.model_meta_info['policy']['backbone']}"
+                )
+            self.policy = PolicyClass(
+                noise_scheduler=noise_scheduler,
+                **self.model_meta_info["policy"]["args"],
+            )
         else:
-            raise ValueError(
-                f"[{self.__class__.__name__}] Invalid backbone: {self.model_meta_info['policy']['backbone']}"
+            self.policy = construct_lowdim_policy(
+                noise_scheduler=noise_scheduler,
+                backbone=self.model_meta_info["policy"]["backbone"],
+                policy_args=self.model_meta_info["policy"]["args"],
+                model_args=self.model_meta_info["policy"]["model_args"],
             )
-        self.policy = PolicyClass(
-            noise_scheduler=noise_scheduler,
-            **self.model_meta_info["policy"]["args"],
-        )
 
         # Load checkpoint
         self.load_ckpt()
 
     def setup_plot(self):
+        if len(self.camera_names) > 0:
+            num_plot_rows = 2
+            num_plot_cols = len(self.camera_names)
+        else:
+            num_plot_rows = 1
+            num_plot_cols = 1
         fig_ax = plt.subplots(
-            2,
-            len(self.camera_names),
+            num_plot_rows,
+            num_plot_cols,
             figsize=(13.5, 6.0),
             dpi=60,
             squeeze=False,
@@ -103,19 +146,23 @@ class RolloutDiffusionPolicy(RolloutBase):
         # Update observation buffer
         if len(self.state_keys) > 0:
             self.update_state_buf()
-        self.update_images_buf()
+        if len(self.camera_names) > 0:
+            self.update_images_buf()
 
         # Infer
         if self.policy_action_buf is None or len(self.policy_action_buf) == 0:
-            input_data = {}
-            if len(self.state_keys) > 0:
-                input_data["state"] = self.get_state()
-            for camera_name, image in zip(self.camera_names, self.get_images()):
-                input_data[DataKey.get_rgb_image_key(camera_name)] = image
+            if len(self.camera_names) > 0:
+                input_data = {}
+                if len(self.state_keys) > 0:
+                    input_data["state"] = self.get_state()
+                for camera_name, image in zip(self.camera_names, self.get_images()):
+                    input_data[DataKey.get_rgb_image_key(camera_name)] = image
+            else:
+                input_data = {"obs": self.get_state()}
             action = self.policy.predict_action(input_data)["action"][0]
-            self.policy_action_buf = list(
-                action.cpu().detach().numpy().astype(np.float64)
-            )
+            action = action.cpu().detach().numpy().astype(np.float64)
+            action = action[self.args.drop_initial_actions :]
+            self.policy_action_buf = list(action)
 
         # Store action
         self.policy_action = denormalize_data(
@@ -149,6 +196,11 @@ class RolloutDiffusionPolicy(RolloutBase):
         return torch.stack(self.state_buf, dim=0)[torch.newaxis].to(self.device)
 
     def update_images_buf(self):
+        if len(self.camera_names) == 0:
+            raise RuntimeError(
+                f"[{self.__class__.__name__}] update_images_buf() requires image observations."
+            )
+
         images = []
         for camera_name in self.camera_names:
             image = self.info["rgb_images"][camera_name]
@@ -185,11 +237,15 @@ class RolloutDiffusionPolicy(RolloutBase):
             _ax.cla()
             _ax.axis("off")
 
-        # Plot images
-        self.plot_images(self.ax[0, 0 : len(self.camera_names)])
+        if len(self.camera_names) > 0:
+            # Plot images
+            self.plot_images(self.ax[0, 0 : len(self.camera_names)])
 
-        # Plot action
-        self.plot_action(self.ax[1, 0])
+            # Plot action
+            self.plot_action(self.ax[1, 0])
+        else:
+            # Plot action
+            self.plot_action(self.ax[0, 0])
 
         # Finalize plot
         self.canvas.draw()

@@ -77,15 +77,18 @@ class MlpDataset(DatasetBase):
             )
 
             # Load images
-            images = np.stack(
-                [
-                    rmb_data[DataKey.get_rgb_image_key(camera_name)][::skip][
-                        obs_time_idxes
-                    ]
-                    for camera_name in self.model_meta_info["image"]["camera_names"]
-                ],
-                axis=0,
-            )
+            if len(self.model_meta_info["image"]["camera_names"]) == 0:
+                images = None
+            else:
+                images = np.stack(
+                    [
+                        rmb_data[DataKey.get_rgb_image_key(camera_name)][::skip][
+                            obs_time_idxes
+                        ]
+                        for camera_name in self.model_meta_info["image"]["camera_names"]
+                    ],
+                    axis=0,
+                )
 
         # Pre-convert data
         state, action, images = self.pre_convert_data(state, action, images)
@@ -93,7 +96,10 @@ class MlpDataset(DatasetBase):
         # Convert to tensor
         state_tensor = torch.tensor(state, dtype=torch.float32)
         action_tensor = torch.tensor(action, dtype=torch.float32)
-        images_tensor = torch.tensor(images, dtype=torch.uint8)
+        if images is None:
+            images_tensor = torch.empty(0, dtype=torch.float32)
+        else:
+            images_tensor = torch.tensor(images, dtype=torch.uint8)
 
         # Augment data
         state_tensor, action_tensor, images_tensor = self.augment_data(

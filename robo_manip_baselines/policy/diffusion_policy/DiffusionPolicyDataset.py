@@ -64,21 +64,27 @@ class DiffusionPolicyDataset(DatasetBase, DpStyleDatasetMixin):
             )
 
             # Load images
-            images = np.stack(
-                [
-                    rmb_data[DataKey.get_rgb_image_key(camera_name)][::skip][time_idxes]
-                    for camera_name in self.model_meta_info["image"]["camera_names"]
-                ],
-                axis=0,
-            )
+            if len(self.model_meta_info["image"]["camera_names"]) == 0:
+                images = None
+            else:
+                images = np.stack(
+                    [
+                        rmb_data[DataKey.get_rgb_image_key(camera_name)][::skip][
+                            time_idxes
+                        ]
+                        for camera_name in self.model_meta_info["image"]["camera_names"]
+                    ],
+                    axis=0,
+                )
 
-        # Check image size
-        current_h, current_w = images.shape[2:4]
-        target_w, target_h = self.model_meta_info["data"]["image_size"]
-        if (current_w, current_h) != (target_w, target_h):
-            raise ValueError(
-                f"[{self.__class__.__name__}] Image size mismatch: ({current_w}, {current_h}) != ({target_w}, {target_h})"
-            )
+        if images is not None:
+            # Check image size
+            current_h, current_w = images.shape[2:4]
+            target_w, target_h = self.model_meta_info["data"]["image_size"]
+            if (current_w, current_h) != (target_w, target_h):
+                raise ValueError(
+                    f"[{self.__class__.__name__}] Image size mismatch: ({current_w}, {current_h}) != ({target_w}, {target_h})"
+                )
 
         # Pre-convert data
         state, action, images = self.pre_convert_data(state, action, images)
@@ -86,7 +92,10 @@ class DiffusionPolicyDataset(DatasetBase, DpStyleDatasetMixin):
         # Convert to tensor
         state_tensor = torch.tensor(state, dtype=torch.float32)
         action_tensor = torch.tensor(action, dtype=torch.float32)
-        images_tensor = torch.tensor(images, dtype=torch.uint8)
+        if images is None:
+            images_tensor = None
+        else:
+            images_tensor = torch.tensor(images, dtype=torch.uint8)
 
         # Augment data
         state_tensor, action_tensor, images_tensor = self.augment_data(
@@ -94,22 +103,26 @@ class DiffusionPolicyDataset(DatasetBase, DpStyleDatasetMixin):
         )
 
         # Convert to data structure of policy input and output
-        data = {"obs": {}, "action": action_tensor}
-        if len(self.model_meta_info["state"]["keys"]) > 0:
-            data["obs"]["state"] = state_tensor
-        for camera_idx, camera_name in enumerate(
-            self.model_meta_info["image"]["camera_names"]
-        ):
-            data["obs"][DataKey.get_rgb_image_key(camera_name)] = images_tensor[
-                camera_idx
-            ]
+        if len(self.model_meta_info["image"]["camera_names"]) == 0:
+            data = {"obs": state_tensor, "action": action_tensor}
+        else:
+            data = {"obs": {}, "action": action_tensor}
+            if len(self.model_meta_info["state"]["keys"]) > 0:
+                data["obs"]["state"] = state_tensor
+            for camera_idx, camera_name in enumerate(
+                self.model_meta_info["image"]["camera_names"]
+            ):
+                data["obs"][DataKey.get_rgb_image_key(camera_name)] = images_tensor[
+                    camera_idx
+                ]
 
         return data
 
     def augment_data(self, state, action, images):
         state, action, images = super().augment_data(state, action, images)
 
-        # Adjust to a range from -1 to 1 to match the original implementation
-        images = images * 2.0 - 1.0
+        if images is not None:
+            # Adjust to a range from -1 to 1 to match the original implementation
+            images = images * 2.0 - 1.0
 
         return state, action, images

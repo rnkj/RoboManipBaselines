@@ -145,6 +145,8 @@ class EndRolloutPhase(PhaseBase):
 
 class RolloutBase(OperationDataMixin, ABC):
     require_task_desc = False
+    MotionManagerClass = MotionManager
+    DataManagerClass = DataManager
 
     def __init__(self):
         # Setup arguments
@@ -170,11 +172,11 @@ class RolloutBase(OperationDataMixin, ABC):
             self.setup_plot()
 
         # Setup motion manager
-        self.motion_manager = MotionManager(self.env)
+        self.motion_manager = self.MotionManagerClass(self.env)
 
         # Setup data manager
         task_desc = self.args.task_desc if self.require_task_desc else ""
-        self.data_manager = DataManager(
+        self.data_manager = self.DataManagerClass(
             self.env, demo_name=self.demo_name, task_desc=task_desc
         )
         self.data_manager.setup_camera_info()

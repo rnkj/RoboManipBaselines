@@ -14,6 +14,7 @@ from diffusion_policy.model.common.lr_scheduler import get_scheduler
 from diffusion_policy.model.diffusion.ema_model import EMAModel
 from robo_manip_baselines.common import DataKey, TrainBase
 
+from .DiffusionLowdimPolicyUtils import construct_lowdim_policy
 from .DiffusionPolicyDataset import DiffusionPolicyDataset
 
 
@@ -134,55 +135,64 @@ class TrainDiffusionPolicy(TrainBase):
 
     def setup_policy(self):
         # Set policy args
-        shape_meta = {
-            "obs": {},
-            "action": {"shape": [len(self.model_meta_info["action"]["example"])]},
-        }
-        if len(self.args.state_keys) > 0:
-            shape_meta["obs"]["state"] = {
-                "shape": [len(self.model_meta_info["state"]["example"])],
-                "type": "low_dim",
+        state_dim = len(self.model_meta_info["state"]["example"])
+        action_dim = len(self.model_meta_info["action"]["example"])
+        if len(self.args.camera_names) > 0:
+            shape_meta = {
+                "obs": {},
+                "action": {"shape": [action_dim]},
             }
-        for camera_name in self.args.camera_names:
-            shape_meta["obs"][DataKey.get_rgb_image_key(camera_name)] = {
-                "shape": [3, self.args.image_size[1], self.args.image_size[0]],
-                "type": "rgb",
+            if len(self.args.state_keys) > 0:
+                shape_meta["obs"]["state"] = {
+                    "shape": [state_dim],
+                    "type": "low_dim",
+                }
+            for camera_name in self.args.camera_names:
+                shape_meta["obs"][DataKey.get_rgb_image_key(camera_name)] = {
+                    "shape": [3, self.args.image_size[1], self.args.image_size[0]],
+                    "type": "rgb",
+                }
+            self.model_meta_info["policy"]["args"] = {
+                "shape_meta": shape_meta,
+                "horizon": self.args.horizon,
+                "n_action_steps": self.args.n_action_steps,
+                "n_obs_steps": self.args.n_obs_steps,
+                "crop_shape": self.args.image_crop_size[::-1],  # (height, width)
+                "obs_encoder_group_norm": True,
+                "eval_fixed_crop": True,
             }
-        self.model_meta_info["policy"]["args"] = {
-            "shape_meta": shape_meta,
-            "horizon": self.args.horizon,
-            "n_action_steps": self.args.n_action_steps,
-            "n_obs_steps": self.args.n_obs_steps,
-            "crop_shape": self.args.image_crop_size[::-1],  # (height, width)
-            "obs_encoder_group_norm": True,
-            "eval_fixed_crop": True,
-        }
-        if self.args.backbone == "cnn":
-            self.model_meta_info["policy"]["args"].update(
-                {
-                    "num_inference_steps": 100,
-                    "down_dims": [512, 1024, 2048],
-                    "obs_as_global_cond": True,
-                    "diffusion_step_embed_dim": 128,
-                    "kernel_size": 5,
-                    "n_groups": 8,
-                    "cond_predict_scale": True,
-                }
-            )
-        else:  # if self.args.backbone == "transformer"
-            self.model_meta_info["policy"]["args"].update(
-                {
-                    "n_layer": 8,
-                    "n_cond_layers": 0,
-                    "n_head": 4,
-                    "n_emb": 256,
-                    "p_drop_emb": 0.0,
-                    "p_drop_attn": 0.3,
-                    "causal_attn": True,
-                    "time_as_cond": True,
-                    "obs_as_cond": True,
-                }
-            )
+            if self.args.backbone == "cnn":
+                self.model_meta_info["policy"]["args"].update(
+                    {
+                        "num_inference_steps": 100,
+                        "down_dims": [512, 1024, 2048],
+                        "obs_as_global_cond": True,
+                        "diffusion_step_embed_dim": 128,
+                        "kernel_size": 5,
+                        "n_groups": 8,
+                        "cond_predict_scale": True,
+                    }
+                )
+            else:  # if self.args.backbone == "transformer"
+                self.model_meta_info["policy"]["args"].update(
+                    {
+                        "n_layer": 8,
+                        "n_cond_layers": 0,
+                        "n_head": 4,
+                        "n_emb": 256,
+                        "p_drop_emb": 0.0,
+                        "p_drop_attn": 0.3,
+                        "causal_attn": True,
+                        "time_as_cond": True,
+                        "obs_as_cond": True,
+                    }
+                )
+        else:
+            if len(self.args.state_keys) == 0:
+                raise ValueError(
+                    f"[{self.__class__.__name__}] state_keys must be non-empty when camera_names is empty."
+                )
+            self.setup_lowdim_policy_meta_info(state_dim, action_dim)
         self.model_meta_info["policy"]["noise_scheduler_args"] = {
             "beta_end": 0.02,
             "beta_schedule": "squaredcos_cap_v2",
@@ -207,12 +217,15 @@ class TrainDiffusionPolicy(TrainBase):
         else:  # if self.model_meta_info["policy"]["scheduler"] == "ddim"
             from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
-            self.model_meta_info["policy"]["args"].update(
-                {
-                    "num_inference_steps": 8,
-                    "down_dims": [256, 512, 1024],
-                }
-            )
+            if len(self.args.camera_names) > 0:
+                self.model_meta_info["policy"]["args"].update(
+                    {
+                        "num_inference_steps": 8,
+                        "down_dims": [256, 512, 1024],
+                    }
+                )
+            else:
+                self.model_meta_info["policy"]["args"]["num_inference_steps"] = 8
             self.model_meta_info["policy"]["noise_scheduler_args"].update(
                 {
                     "set_alpha_to_one": True,
@@ -224,22 +237,30 @@ class TrainDiffusionPolicy(TrainBase):
             )
 
         # Construct policy
-        if self.args.backbone == "cnn":
-            from diffusion_policy.policy.diffusion_unet_hybrid_image_policy import (
-                DiffusionUnetHybridImagePolicy,
-            )
+        if len(self.args.camera_names) > 0:
+            if self.args.backbone == "cnn":
+                from diffusion_policy.policy.diffusion_unet_hybrid_image_policy import (
+                    DiffusionUnetHybridImagePolicy,
+                )
 
-            PolicyClass = DiffusionUnetHybridImagePolicy
-        else:  # if self.args.backbone == "transformer"
-            from diffusion_policy.policy.diffusion_transformer_hybrid_image_policy import (
-                DiffusionTransformerHybridImagePolicy,
-            )
+                PolicyClass = DiffusionUnetHybridImagePolicy
+            else:  # if self.args.backbone == "transformer"
+                from diffusion_policy.policy.diffusion_transformer_hybrid_image_policy import (
+                    DiffusionTransformerHybridImagePolicy,
+                )
 
-            PolicyClass = DiffusionTransformerHybridImagePolicy
-        self.policy = PolicyClass(
-            noise_scheduler=noise_scheduler,
-            **self.model_meta_info["policy"]["args"],
-        )
+                PolicyClass = DiffusionTransformerHybridImagePolicy
+            self.policy = PolicyClass(
+                noise_scheduler=noise_scheduler,
+                **self.model_meta_info["policy"]["args"],
+            )
+        else:
+            self.policy = construct_lowdim_policy(
+                noise_scheduler=noise_scheduler,
+                backbone=self.args.backbone,
+                policy_args=self.model_meta_info["policy"]["args"],
+                model_args=self.model_meta_info["policy"]["model_args"],
+            )
 
         # Construct exponential moving average (EMA)
         if self.args.use_ema:
@@ -263,12 +284,19 @@ class TrainDiffusionPolicy(TrainBase):
                 eps=1e-8,
             )
         else:  # if self.args.backbone == "transformer"
-            self.optimizer = self.policy.get_optimizer(
-                transformer_weight_decay=1e-3,
-                obs_encoder_weight_decay=1e-6,
-                learning_rate=self.args.lr,
-                betas=(0.9, 0.95),
-            )
+            if len(self.args.camera_names) > 0:
+                self.optimizer = self.policy.get_optimizer(
+                    transformer_weight_decay=1e-3,
+                    obs_encoder_weight_decay=1e-6,
+                    learning_rate=self.args.lr,
+                    betas=(0.9, 0.95),
+                )
+            else:
+                self.optimizer = self.policy.get_optimizer(
+                    weight_decay=1e-3,
+                    learning_rate=self.args.lr,
+                    betas=(0.9, 0.95),
+                )
 
         if self.args.backbone == "cnn":
             num_warmup_steps = 500
@@ -295,9 +323,51 @@ class TrainDiffusionPolicy(TrainBase):
         print(
             f"  - horizon: {self.args.horizon}, obs steps: {self.args.n_obs_steps}, action steps: {self.args.n_action_steps}"
         )
-        print(
-            f"  - image size: {self.args.image_size}, image crop size: {self.args.image_crop_size}"
-        )
+        if len(self.args.camera_names) > 0:
+            print(
+                f"  - image size: {self.args.image_size}, image crop size: {self.args.image_crop_size}"
+            )
+
+    def setup_lowdim_policy_meta_info(self, state_dim, action_dim):
+        self.model_meta_info["policy"]["args"] = {
+            "horizon": self.args.horizon,
+            "obs_dim": state_dim,
+            "action_dim": action_dim,
+            "n_action_steps": self.args.n_action_steps,
+            "n_obs_steps": self.args.n_obs_steps,
+        }
+        policy_args = self.model_meta_info["policy"]["args"]
+        if self.args.backbone == "cnn":
+            policy_args.update({"obs_as_global_cond": True})
+            self.model_meta_info["policy"]["model_args"] = {
+                "input_dim": action_dim,
+                "global_cond_dim": state_dim * self.args.n_obs_steps,
+                "diffusion_step_embed_dim": 128,
+                "kernel_size": 5,
+                "cond_predict_scale": True,
+            }
+            if self.args.scheduler == "ddpm":
+                self.model_meta_info["policy"]["model_args"]["down_dims"] = [
+                    512,
+                    1024,
+                    2048,
+                ]
+        else:  # if self.args.backbone == "transformer"
+            policy_args.update({"obs_as_cond": True})
+            self.model_meta_info["policy"]["model_args"] = {
+                "input_dim": action_dim,
+                "output_dim": action_dim,
+                "horizon": self.args.horizon,
+                "n_obs_steps": self.args.n_obs_steps,
+                "cond_dim": state_dim,
+                "n_layer": 8,
+                "n_head": 4,
+                "n_emb": 256,
+                "p_drop_emb": 0.0,
+                "p_drop_attn": 0.3,
+                "causal_attn": True,
+                "obs_as_cond": True,
+            }
 
     def load_ckpt(self):
         super().load_ckpt()

@@ -244,7 +244,7 @@ class RealEnvBase(EnvDataMixin, gym.Env, ABC):
     def overwrite_command_for_safety(self, action, duration, joint_vel_limit_scale):
         arm_joint_idxes = np.concatenate(
             [
-                body_config.arm_joint_idxes
+                body_config.arm_action_idxes
                 for body_config in self.body_config_list
                 if isinstance(body_config, ArmConfig)
             ]
